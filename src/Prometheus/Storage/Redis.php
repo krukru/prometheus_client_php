@@ -133,32 +133,34 @@ LUA
         unset($metaData['value']);
         unset($metaData['labelValues']);
         unset($metaData['command']);
-        $this->redis->eval(<<<LUA
-local result = redis.call(KEYS[2], KEYS[1], KEYS[4], ARGV[1])
 
-if KEYS[2] == 'hSet' then
-    if result == 1 then
-        redis.call('hSet', KEYS[1], '__meta', ARGV[2])
-        redis.call('sAdd', KEYS[3], KEYS[1])
-    end
-else
-    if result == ARGV[1] then
-        redis.call('hSet', KEYS[1], '__meta', ARGV[2])
-        redis.call('sAdd', KEYS[3], KEYS[1])
-    end
-end
-LUA
-            ,
-            array(
-                $this->toMetricKey($data),
-                $this->getRedisCommand($data['command']),
-                self::PROMETHEUS_PREFIX . Gauge::TYPE . self::PROMETHEUS_METRIC_KEYS_SUFFIX,
-                json_encode($data['labelValues']),
-                $data['value'],
-                json_encode($metaData),
-            ),
-            4
-        );
+        $metricKey = $this->toMetricKey($data);
+        $jsonLabelValues = json_encode($data['labelValues']);
+        $jsonMetaData = json_encode($metaData);
+
+        switch ($data['command']) {
+            case Adapter::COMMAND_SET:
+                $result = $this->redis->hSet($metricKey, $jsonLabelValues, $data['value']);
+                $new = $result === 1;
+                $returnValue = 0;
+                break;
+            case Adapter::COMMAND_INCREMENT_INTEGER:
+                $result = $this->redis->hIncrBy($metricKey, $jsonLabelValues, $data['value']);
+                $new = $result == $data['value'];
+                $returnValue = $result;
+                break;
+            case Adapter::COMMAND_INCREMENT_FLOAT:
+                $result = $this->redis->hIncrByFloat($metricKey, $jsonLabelValues, $data['value']);
+                $new = $result == $data['value'];
+                $returnValue = $result;
+                break;
+            default:
+                throw new \Exception('Command not supported');
+        }
+        if ($new) {
+            $this->redis->hMset($metricKey, ['__meta' => $jsonMetaData]);
+            $this->redis->sAdd(self::PROMETHEUS_PREFIX . Gauge::TYPE . self::PROMETHEUS_METRIC_KEYS_SUFFIX, $metricKey);
+        }
     }
 
     public function updateCounter(array $data)
@@ -168,26 +170,34 @@ LUA
         unset($metaData['value']);
         unset($metaData['labelValues']);
         unset($metaData['command']);
-        $result = $this->redis->eval(<<<LUA
-local result = redis.call(KEYS[2], KEYS[1], KEYS[4], ARGV[1])
-if result == tonumber(ARGV[1]) then
-    redis.call('hMSet', KEYS[1], '__meta', ARGV[2])
-    redis.call('sAdd', KEYS[3], KEYS[1])
-end
-return result
-LUA
-            ,
-            array(
-                $this->toMetricKey($data),
-                $this->getRedisCommand($data['command']),
-                self::PROMETHEUS_PREFIX . Counter::TYPE . self::PROMETHEUS_METRIC_KEYS_SUFFIX,
-                json_encode($data['labelValues']),
-                $data['value'],
-                json_encode($metaData),
-            ),
-            4
-        );
-        return $result;
+
+
+        $metricKey = $this->toMetricKey($data);
+        $jsonLabelValues = json_encode($data['labelValues']);
+        $jsonMetaData = json_encode($metaData);
+
+        $new = false;
+        $returnValue = null;
+        switch ($data['command']) {
+            case Adapter::COMMAND_SET:
+                $result = $this->redis->hSet($metricKey, $jsonLabelValues, 0);
+                $new = $result === 1;
+                $returnValue = 0;
+                break;
+            case Adapter::COMMAND_INCREMENT_INTEGER:
+                $result = $this->redis->hIncrBy($metricKey, $jsonLabelValues, $data['value']);
+                $new = $result == $data['value'];
+                $returnValue = $result;
+                break;
+            default:
+                throw new \Exception('Command not supported');
+        }
+        if ($new) {
+            $this->redis->hMset($metricKey, ['__meta' => $jsonMetaData]);
+            $this->redis->sAdd(self::PROMETHEUS_PREFIX . Counter::TYPE . self::PROMETHEUS_METRIC_KEYS_SUFFIX,
+                $metricKey);
+        }
+        return $returnValue;
     }
 
     private function collectHistograms()
@@ -282,7 +292,7 @@ LUA
                     'value' => $value
                 );
             }
-            usort($gauge['samples'], function($a, $b){
+            usort($gauge['samples'], function ($a, $b) {
                 return strcmp(implode("", $a['labelValues']), implode("", $b['labelValues']));
             });
             $gauges[] = $gauge;
@@ -308,7 +318,7 @@ LUA
                     'value' => $value
                 );
             }
-            usort($counter['samples'], function($a, $b){
+            usort($counter['samples'], function ($a, $b) {
                 return strcmp(implode("", $a['labelValues']), implode("", $b['labelValues']));
             });
             $counters[] = $counter;
@@ -332,6 +342,7 @@ LUA
 
     /**
      * @param array $data
+     *
      * @return string
      */
     private function toMetricKey(array $data)
