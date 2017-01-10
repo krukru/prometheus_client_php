@@ -41,6 +41,7 @@ class Redis implements Adapter
 
         $this->options = array_merge(self::$defaultOptions, $options);
         $this->redis = new \Redis();
+        $this->openConnection();
     }
 
     /**
@@ -53,7 +54,6 @@ class Redis implements Adapter
 
     public function flushRedis()
     {
-        $this->openConnection();
         $this->redis->flushAll();
     }
 
@@ -63,7 +63,6 @@ class Redis implements Adapter
      */
     public function collect()
     {
-        $this->openConnection();
         $metrics = $this->collectHistograms();
         $metrics = array_merge($metrics, $this->collectGauges());
         $metrics = array_merge($metrics, $this->collectCounters());
@@ -94,7 +93,6 @@ class Redis implements Adapter
 
     public function updateHistogram(array $data)
     {
-        $this->openConnection();
         $bucketToIncrease = '+Inf';
         foreach ($data['buckets'] as $bucket) {
             if ($data['value'] <= $bucket) {
@@ -128,7 +126,6 @@ LUA
 
     public function updateGauge(array $data)
     {
-        $this->openConnection();
         $metaData = $data;
         unset($metaData['value']);
         unset($metaData['labelValues']);
@@ -163,7 +160,6 @@ LUA
 
     public function updateCounter(array $data)
     {
-        $this->openConnection();
         $metaData = $data;
         unset($metaData['value']);
         unset($metaData['labelValues']);
